@@ -1,0 +1,45 @@
+                               Snipe-PCView
+
+What is Snipe-PCView
+--------------------
+ Snipe-PCView is software suit that get PC config data by SNMP
+ and put them into Snipe-IT.
+
+ pc-snipe
+ --------
+  The core command of this suit.
+  Get from one PC config information by SNMP and then put into Snipe-IT.
+  Specify the asset by "asset tag" or "computer name".
+
+ get_snao
+ --------
+  Process multiple PCs config information.
+  Subjects of PC are specified by automatic process flag of the asset data
+  of Snipe-IT.
+
+Requirements
+------------
+ Following softwares are required.
+ * python3 with extra modules below
+   * dns
+   * pysnmp
+
+ Related materials below are also required.
+ * Snipe-IT
+   * Version 6.0.13 or later
+   * Must be network reachable from Snipe-PCView server
+ * Simple Network Management Protocol (SNMP) service for each Windows PCs
+ * One of way below to resolve hostnames of Windows PCs
+   * Active Directory with DDNS
+   * Other DNS server
+   * /etc/hosts
+
+Installation
+------------
+ see the file INSTALL.
+
+Contact
+-------
+ DesigNET Inc.
+ e-mail: oss-lab@designet.co.jp
+ URL: https://www.designet.co.jp/

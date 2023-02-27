@@ -1,0 +1,278 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+
+"""
+    get_snao
+        One of pc-snipe driver of Snipe-PCView software suit
+
+    Copyright (C) 2023  DesigNET, INC.
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""
+
+#
+# import from system library
+#
+import sys
+import os
+import re
+import datetime
+import json
+
+sys.dont_write_bytecode = True
+
+#
+# import from our library
+#
+myprefix = os.path.join(os.path.dirname(__file__), '..')
+sys.path.append(myprefix)
+
+from lib import gsnao_common_defs as C
+from lib import gsnao_config
+from lib import gsnao_snipeit_api as API
+from lib import gsnao_proc
+
+#
+# global constant definision
+#
+
+#
+# functions
+#
+
+"""
+| check_args(argv)
+|  Check args format
+|
+| Parameters
+| ----------
+| argv : list
+|     arg values list
+|
+| Return value
+| ------------
+| arg_list : dict
+|     Success
+| err_msg : str
+|     error message
+"""
+def check_args(argv):
+
+    # initialize arg_list
+    arg_list = {
+        'conf_file': C.DEF_CONFIG_FILE,
+        'stop_mode': False,
+        'listup_mode': False,
+        'report_mode': False,
+        'quiet_mode' : False,
+    }
+
+    # check format
+    arglen = len(argv)
+    ac = 1
+    ext_conf = 0
+    while ac < arglen:
+
+        # -s
+        if argv[ac] == '-s':
+            arg_list['stop_mode'] = True
+            ac += 1
+            continue
+
+        # -l
+        elif argv[ac] == '-l':
+            arg_list['listup_mode'] = True
+            ac += 1
+            continue
+
+        # -r
+        elif argv[ac] == '-r':
+            arg_list['report_mode'] = True
+            ac += 1
+            continue
+
+        # -q
+        elif argv[ac] == '-q':
+            arg_list['quiet_mode'] = True
+            ac += 1
+            continue
+
+        # -c
+        elif argv[ac] == '-c':
+            if ac > arglen - 1:
+                err_msg = '-c must take file name'
+                return err_msg
+            arg_list['conf_file'] = argv[ac + 1]
+            ext_conf = 1
+            ac += 2
+            continue
+
+        # not defined
+        else:
+            err_msg = f"Unknown option {argv[ac]}."
+            return err_msg
+
+    return arg_list
+
+# END OF check_args()
+
+"""
+| die_error(code, msgs)
+|  Print error message and exit abnormal code
+|
+| Parameters
+| ----------
+| code : int
+|     error code
+| err_list : list
+|     error messages
+|
+| Return value
+| ------------
+| (die in this function)
+"""
+def die_error(code, msgs):
+    for msg in msgs:
+        print(msg)
+    exit(code)
+
+# END OF die_error()
+
+"""
+| print_atags(atags)
+|  Print assets list in CSV format
+|
+| Parameters
+| ----------
+| atags : list
+|     asetts list
+|
+| Return value
+| ------------
+| (void)
+"""
+def print_atags(atags):
+    # print header
+    print('"Asset Tag","Computer Name","ID"')
+
+    # print each asset
+    for asset in atags:
+        CSV_FMT = '"{}","{}","{}"'
+        print(CSV_FMT.format(asset['atag'], asset['cname'], asset['id']))
+
+# END OF print_atags()
+
+"""
+| print_report(report)
+|  Print report
+|
+| Parameters
+| ----------
+| report : dict
+|     report list
+|
+| Return value
+| ------------
+| (void)
+"""
+def print_report(report):
+    # print each asset
+    for rep in report:
+        print(report[rep])
+
+# END OF print_atags()
+
+#
+# Main
+#
+
+"""
+|main_proc()
+|
+|(avoid access to module scope values)
+"""
+def main_proc():
+
+    # check args
+    argv = sys.argv
+    arg_list = check_args(argv)
+    if type(arg_list) is str:
+        # args error
+        die_error(C.ERRCODE_ARG, [arg_list])
+
+    # read get_snao.conf
+    conf_code, CONF = gsnao_config.read_conf(arg_list['conf_file'])
+    if conf_code == 1:
+        # config format error
+        die_error(C.ERRCODE_CONF, CONF)
+        exit(C.ERRCODE_CONF)
+    elif conf_code == 2:
+        # config read error
+        die_error(C.ERRCODE_SYS_CONF, CONF)
+
+    # import pc-snipe libraries
+    pcs_libdir = CONF[C.CF_PCS_PREFIX] + '/lib'
+    try:
+        sys.path.append(pcs_libdir)
+        import common_defs as PSC
+        import pcs_config
+    except:
+        # library import error
+        err_msg = 'Cannot import pc-snipe library files'
+        die_error(C.ERRCODE_SYS_OTHER, [err_msg])
+
+    # read pc-snipe.conf
+    psc_code, PSCONF = pcs_config.read_conf(CONF[C.CF_PCS_CONF])
+    if psc_code == 1:
+        # config format error
+        die_error(C.ERRCODE_CONF, PSCONF)
+        exit(C.ERRCODE_CONF)
+    elif psc_code == 2:
+        # config read error
+        die_error(C.ERRCODE_SYS_CONF, PSCONF)
+
+    # read mapping.conf
+    dmap_code, DMAP = pcs_config.read_dmap(PSCONF[C.CF_MAPPINGFILE])
+    if dmap_code == 1:
+        # dmap format error
+        die_error(C.ERRCODE_DMAP, DMAP)
+    elif dmap_code == 2:
+        # dmap read error
+        die_error(C.ERRCODE_SYS_DMAP, DMAP)
+    gsnao_config.merge_config(CONF, PSCONF, DMAP)
+
+    # get asset tags that are set auto collect flag
+    code, atags = API.search_by_col(CONF)
+    if code != 0:
+        # API error
+        die_error(C.ERRCODE_SYS_API, [atags])
+
+    # listup_mode
+    if arg_list['listup_mode'] == True:
+        print_atags(atags)
+        exit(C.ERRCODE_SUCCESS)
+        
+    code, report = gsnao_proc.manage_proc(CONF, arg_list, atags)
+    if code == 0:
+        ecode = C.ERRCODE_SUCCESS
+    else:
+        ecode = C.ERRCODE_SYS_PCS
+
+    if arg_list['quiet_mode'] == False:
+        print_report(report)
+    exit(ecode)
+
+# END OF main_proc()
+
+main_proc()

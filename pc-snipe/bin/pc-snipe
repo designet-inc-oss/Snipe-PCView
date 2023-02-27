@@ -1,0 +1,350 @@
+#!/usr/bin/python3
+# -*- coding: utf-8 -*-
+
+"""
+    pc-snipe
+        A core program of Snipe-PCView software suit
+
+    Copyright (C) 2023  DesigNET, INC.
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <https://www.gnu.org/licenses/>.
+"""
+
+#
+# import from system library
+#
+import sys
+import os
+import re
+import datetime
+import json
+
+sys.dont_write_bytecode = True
+
+#
+# import from our library
+#
+myprefix = os.path.join(os.path.dirname(__file__), '..')
+sys.path.append(myprefix)
+
+from lib import common_defs as C
+from lib import pcs_snmp as SNMP
+from lib import pcs_config
+from lib import snipeit_api as API
+from lib import pcs_dns
+
+#
+# global constant definision
+#
+
+# search mode
+SMODE_TAG = 0
+SMODE_NAME = 1
+
+#
+# functions
+#
+
+"""
+| check_args(argv)
+|  Check args format
+|
+| Parameters
+| ----------
+| argv : list
+|     arg values list
+|
+| Return value
+| ------------
+| arg_list : dict
+|     Success
+| err_msg : str
+|     error message
+"""
+def check_args(argv):
+
+    # initialize arg_list
+    arg_list = {
+        'conf_file': C.DEF_CONFIG_FILE,
+        'search_mode': -1,
+        'search_arg': '',
+        'debug_mode': 0
+    }
+
+    # check format
+    arglen = len(argv)
+    ac = 1
+    ext_conf = 0
+    while ac < arglen:
+        # -t
+        if argv[ac] == '-t':
+            if ac != arglen - 2:
+                err_msg = '-t must be the last arg or take an asset tag'
+                return err_msg
+            arg_list['search_mode'] = SMODE_TAG
+            arg_list['search_arg'] = argv[ac + 1]
+            break
+
+        # -n
+        elif argv[ac] == '-n':
+            if ac != arglen - 2:
+                err_msg = '-n must be the last arg or take a computer name'
+                return err_msg
+            arg_list['search_mode'] = SMODE_NAME
+            arg_list['search_arg'] = argv[ac + 1]
+            break
+
+        # -d
+        elif argv[ac] == '-d':
+            arg_list['debug_mode'] = 1
+            ac += 1
+            continue
+
+        # -c
+        elif argv[ac] == '-c':
+            if ac > arglen - 1:
+                err_msg = '-c must take file name'
+                return err_msg
+            arg_list['conf_file'] = argv[ac + 1]
+            ext_conf = 1
+            ac += 2
+            continue
+
+        # not defined
+        else:
+            err_msg = f"Unknown option {argv[ac]}."
+            return err_msg
+
+    # check -t or -n exists
+    if arg_list['search_mode'] == -1:
+        err_msg = 'There must be -t or -n arg'
+        return err_msg
+
+    # check config file
+    conf = arg_list['conf_file']
+    if (ext_conf == 1) and (not os.path.isfile(conf)):
+        err_msg = f"Config file {conf} does not exist"
+        return err_msg
+
+    return arg_list
+
+# END OF check_args()
+
+"""
+| print_success(s_code, s_msg, dmap, before, after)
+|  Print success JSON
+|
+| Parameters
+| ----------
+| s_code : int
+|     status code
+| s_msg  : list
+|     warning message
+| dmap : dict
+|     dictionary of DMAP
+| before : dict
+|     Before data (from Snipe-IT via API)
+| after : dict
+|     After data (from PC via SNMP)
+|
+| Return value
+| ------------
+| (void)
+"""
+def print_success(s_code, s_msg, dmap, before, after):
+    try:
+        tag = before[C.JSON_ATAG]
+    except:
+        tag = ''
+
+    btop = before[C.JSON_RAW][C.JSON_CFIELD]
+    arr_b = {}
+    arr_a = {}
+    for elem, sit_fname in dmap.items():
+        bflg = 0
+        try:
+            val = btop[sit_fname][C.JSON_VALUE]
+            arr_b[sit_fname] = val
+        except:
+            bflg = 1
+
+        try:
+            val = after[C.JSON_CFIELD][elem]
+            arr_a[sit_fname] = val
+            if bflg == 1:
+                arr_b[sit_fname] = ''
+        except:
+            if bflg == 0:
+                arr_a[sit_fname] = ''
+
+    # build print JSON
+    print_json = {
+        C.JSON_STATUS : s_code,
+        C.JSON_MSG    : s_msg,
+        C.JSON_TAG    : tag,
+        C.JSON_BEFORE : arr_b,
+        C.JSON_AFTER  : arr_a
+    }
+    print(json.dumps(print_json, indent=2, ensure_ascii=False))
+    return
+
+# END OF print_success()
+
+"""
+| die_error(code, err_list)
+|  Print error JSON and exit abnormal code
+|
+| Parameters
+| ----------
+| code : int
+|     error code
+| err_list : list
+|     error messages
+|
+| Return value
+| ------------
+| (die in this function)
+"""
+def die_error(code, err_list):
+    ret_arr = {
+        C.JSON_STATUS : code,
+        C.JSON_MSG    : err_list,
+        C.JSON_TAG    : '',
+        C.JSON_BEFORE : [],
+        C.JSON_AFTER  : []
+    }
+    print(json.dumps(ret_arr, indent=2, ensure_ascii=False))
+    exit(code)
+
+# END OF die_error()
+
+#
+# Main
+#
+
+"""
+|main_proc()
+|
+|(avoid access to module scope values)
+"""
+def main_proc():
+
+    # check args
+    argv = sys.argv
+    arg_list = check_args(argv)
+    if type(arg_list) is str:
+        # args error
+        die_error(C.ERRCODE_ARG, [arg_list])
+
+    # read config
+    conf_code, CONF = pcs_config.read_conf(arg_list['conf_file'])
+    if conf_code == 1:
+        # config format error
+        die_error(C.ERRCODE_CONF, CONF)
+    elif conf_code == 2:
+        # config read error
+        die_error(C.ERRCODE_SYS_CONF, CONF)
+
+    # read DMAP
+    dmap_code, DMAP = pcs_config.read_dmap(CONF[C.CF_MAPPINGFILE])
+    if dmap_code == 1:
+        # dmap format error
+        die_error(C.ERRCODE_DMAP, DMAP)
+    elif dmap_code == 2:
+        # dmap read error
+        die_error(C.ERRCODE_SYS_DMAP, DMAP)
+
+    # search
+    if arg_list['search_mode'] == SMODE_TAG:
+        scode, before = API.search_by_tag(CONF, arg_list['search_arg'], DMAP)
+    elif arg_list['search_mode'] == SMODE_NAME:
+        scode, before = API.search_by_name(CONF, arg_list['search_arg'], DMAP)
+
+    if scode == 1:
+        # asset not found
+        die_error(C.ERRCODE_NOTAG, [before])
+    elif scode == 2:
+        # system error
+        die_error(C.ERRCODE_SYS_API, [before])
+
+    # check asset has the ComputerName
+    if before[C.JSON_COMPUTERNAME] == '':
+        # asset not found
+        die_error(C.ERRCODE_NOASSET, ['The asset has no ComputerName field.'])
+    computer_name = before[C.JSON_COMPUTERNAME]
+    computer_fqdn = computer_name + '.' + CONF[C.CF_DNSDOMAIN]
+
+    # get IP address
+    dns_code, ipaddr = pcs_dns.get_ipaddr(CONF, computer_fqdn)
+    # dns error
+    if dns_code == 1:
+        # query error
+        die_error(C.ERRCODE_NOIP, [str(ipaddr)])
+    elif dns_code == 2:
+        # system error
+        die_error(C.ERRCODE_SYS_DNS, [ipaddr])
+
+    # get community
+    comm = before[C.JSON_COMMUNITY]
+
+    # get PC info by SNMP
+    snmp_code, snmp_data = SNMP.get_snmp(CONF, DMAP, ipaddr, comm)
+    if snmp_code == 1:
+        die_error(C.ERRCODE_NOSNMP, [snmp_data])
+    elif snmp_code == 2:
+        die_error(C.ERRCODE_SYS_SNMP, [snmp_data])
+
+    # accumulate after info
+    code, after = SNMP.accumulate_after(CONF, DMAP,
+                                        computer_name, ipaddr, snmp_data)
+    if code == 1:
+        die_error(C.ERRCODE_NOTMPL, [after])
+    elif code == 2:
+        die_error(C.ERRCODE_SYS_TMPL, [after])
+
+    # update Snipe-IT
+    if arg_list['debug_mode'] == 0:
+        # make JSON for API
+        sit_arr = API.make_snipeit_json(DMAP, before, after)
+        if sit_arr == False:
+            # no custom field found
+            die_error(101, ['Unknown error'])
+
+        # update by API
+        code, msg = API.update_snipeit(CONF, before[C.JSON_ID], sit_arr)
+        if code != 0:
+            die_error(C.ERRCODE_SYS_API, [msg])
+
+    # decide success exit code
+    dif_arr = after[C.JSON_DIFF]
+    if dif_arr[C.JDIF_COMPUTERNAME] == True:
+        s_code = C.ERRCODE_DIFF
+        s_fmt = 'ComputerName is differ (Snipe-IT: {} / PC: {})'
+        s_msg = [s_fmt.format(before[C.JSON_COMPUTERNAME],
+                             after[C.JSON_CFIELD][C.JSON_COMPUTERNAME])]
+    elif dif_arr[C.JDIF_OSNAME] == True:
+        s_code = C.ERRCODE_OS
+        s_fmt = 'The computer may not be Windows ({})'
+        s_msg = [s_fmt.format(after[C.JSON_CFIELD][C.JSON_COMPUTERINFO])]
+    else:
+        s_code = C.ERRCODE_SUCCESS
+        s_msg = [] 
+
+    # print output JSON and exit
+    print_success(s_code, s_msg, DMAP, before, after)
+    exit(s_code)
+
+# END OF main_proc()
+
+main_proc()
